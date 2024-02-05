@@ -167,6 +167,9 @@ def normalize_config(cfg):
     ):
         cfg.gradient_checkpointing_kwargs = {"use_reentrant": True}
 
+    if cfg.medusa_num_heads is not None:
+        normalize_medusa_config(cfg)
+
     log_gpu_memory_usage(LOG, "baseline", cfg.device)
 
 
@@ -446,6 +449,16 @@ def validate_config(cfg):
             "If you want to full finetune, please turn off load_in_8bit and load_in_4bit."
         )
 
+    if (
+        not cfg.adapter
+        and not cfg.medusa_only_heads
+        and (cfg.load_in_8bit or cfg.load_in_4bit)
+    ):
+        raise ValueError(
+            "load_in_8bit and load_in_4bit are not supported without setting an adapter."
+            "If you want to full finetune, please turn off load_in_8bit and load_in_4bit."
+        )
+
     if cfg.rope_scaling:
         LOG.warning("`rope_scaling` should now be be a key under `model_config`")
 
@@ -536,3 +549,34 @@ def validate_config(cfg):
     # File "/root/miniconda3/envs/py3.9/lib/python3.9/site-packages/optimum/bettertransformer/models/attention.py", line 74, in gpt2_wrapped_scaled_dot_product
     # attention_mask = causal_mask + attention_mask
     # RuntimeError: The size of tensor a (2048) must match the size of tensor b (8132) at non-singleton dimension 3
+
+
+def normalize_medusa_config(cfg):
+    from loguru import logger
+    from axolotl.utils.distributed import is_main_process
+
+    cfg.medusa_num_layers = cfg.medusa_num_layers or 0
+    cfg.medusa_heads_coefficient = cfg.medusa_heads_coefficient or 0.1
+    cfg.medusa_decay_coefficient = cfg.medusa_decay_coefficient or 1.0
+    cfg.medusa_logging = cfg.medusa_logging or False
+    cfg.medusa_logging_topk = cfg.medusa_logging_topk
+    cfg.medusa_scheduler = cfg.medusa_scheduler or "sine"
+    cfg.medusa_only_heads = cfg.medusa_only_heads or False
+    cfg.medusa_num_unfreeze_layers = cfg.medusa_num_unfreeze_layers or 0
+    if cfg.medusa_num_unfreeze_layers > 0:
+        assert (
+            cfg.gradient_checkpointing is not True
+        ), "gradient_checkpointing is not supported with medusa_num_unfreeze_layers > 0"
+
+    cfg.medusa_lr_multiplier = cfg.medusa_lr_multiplier or 1.0
+    cfg.medusa_distillation_regularization = (
+        cfg.medusa_distillation_regularization or 0.0
+    )
+    cfg.medusa_self_distillation = cfg.medusa_self_distillation or False
+    if cfg.medusa_self_distillation:
+        assert (
+            cfg.adapter is not None
+        ), "adapter is required for medusa_self_distillation"
+
+    if is_main_process():
+        logger.info(cfg)

@@ -1,4 +1,5 @@
 """Module for models and model loading"""
+
 import logging
 import math
 import os
@@ -24,6 +25,11 @@ from transformers import (  # noqa: F401
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 
 from axolotl.models.mamba import fix_mamba_attn_for_loss
+from axolotl.monkeypatch.medusa_utils import (
+    add_medusa_heads,
+    replace_compute_loss,
+    replace_create_optimizer,
+)
 from axolotl.prompt_tokenizers import LLAMA_DEFAULT_EOS_TOKEN
 from axolotl.utils.bench import log_gpu_memory_usage
 from axolotl.utils.chat_templates import chat_templates
@@ -694,6 +700,52 @@ def load_model(
                 if hasattr(module, "weight"):
                     module.to(cfg.torch_dtype)
 
+    # Add support for Medusa (https://github.com/FasterDecoding/Medusa)
+    if cfg.medusa_num_heads is not None:
+        from loguru import logger
+        from axolotl.utils.distributed import is_main_process
+        from transformers import LlamaForCausalLM, MistralForCausalLM
+
+        assert isinstance(
+            model, (LlamaForCausalLM, MistralForCausalLM)
+        ), "Medusa is only supported for Llama and Mistral models for now"
+
+        if is_main_process():
+            logger.info(
+                f"using Medusa with {cfg.medusa_num_heads} heads, {cfg.medusa_num_layers} layers, {cfg.medusa_decay_coefficient} decay coefficient, {cfg.medusa_heads_coefficient} heads coefficient, {cfg.medusa_scheduler} scheduler, {cfg.medusa_logging} logging"
+            )
+
+        add_medusa_heads(
+            model,
+            medusa_num_heads=cfg.medusa_num_heads,
+            medusa_num_layers=cfg.medusa_num_layers,
+        )
+
+        replace_compute_loss(
+            medusa_heads_coefficient=cfg.medusa_heads_coefficient,
+            medusa_decay_coefficient=cfg.medusa_decay_coefficient,
+            medusa_scheduler=cfg.medusa_scheduler,
+            medusa_logging=cfg.medusa_logging,
+            medusa_logging_topk=cfg.medusa_logging_topk,
+            medusa_only_heads=cfg.medusa_only_heads,
+            medusa_distillation_regularization=cfg.medusa_distillation_regularization,
+            medusa_self_distillation=cfg.medusa_self_distillation,
+        )
+
+        if cfg.medusa_lr_multiplier != 1:
+            if is_main_process():
+                logger.info(f"Using Medusa LR multiplier {cfg.medusa_lr_multiplier}")
+            replace_create_optimizer(
+                medusa_lr_multiplier=cfg.medusa_lr_multiplier,
+            )
+
+        if cfg.adapter in ["lora", "qlora"]:
+            # Add medusa heads to cfg.lora_modules_to_save
+            if cfg.lora_modules_to_save is None:
+                cfg.lora_modules_to_save = []
+            for i in range(cfg.medusa_num_heads):
+                cfg.lora_modules_to_save.append(f"medusa_head.{i}")
+
     lora_config = None
     if not reference_model or cfg.lora_model_dir:
         # if we're not loading the reference model, then we're loading the model for training
@@ -702,6 +754,39 @@ def load_model(
             _, lora_config = load_lora(model, cfg, inference=False, config_only=True)
         else:
             model, lora_config = load_adapter(model, cfg, cfg.adapter)
+
+    # Medusa
+    if cfg.medusa_num_heads is not None and (
+        cfg.medusa_only_heads or cfg.medusa_num_unfreeze_layers > 0
+    ):
+        LOG.info("Freeze layers!")
+        for param in model.parameters():
+            param.requires_grad = False
+        # Leave the last medusa_num_unfreeze_layers layers trainable
+        if cfg.medusa_num_unfreeze_layers > 0:
+            for layer in model.model.layers[-cfg.medusa_num_unfreeze_layers :]:
+                LOG.info(f"Unfreezing layer {layer}")
+                for param in layer.parameters():
+                    param.requires_grad = True
+            # Leave the last medusa_num_unfreeze_layers layers trainable to ensure the gradient can pass through
+            for param in model.model.norm.parameters():
+                param.requires_grad = True
+
+        for param in model.medusa_head.parameters():
+            param.requires_grad = True
+
+        if not cfg.medusa_only_heads:
+            for param in model.lm_head.parameters():
+                param.requires_grad = True
+
+        if cfg.gradient_checkpointing:
+            # https://github.com/huggingface/transformers/issues/21381#issuecomment-1666498410
+            from functools import partial
+
+            notfailing_checkpoint = partial(
+                torch.utils.checkpoint.checkpoint, use_reentrant=False
+            )
+            torch.utils.checkpoint.checkpoint = notfailing_checkpoint
 
     if cfg.ddp and not load_in_8bit and not (cfg.rl and cfg.load_in_4bit):
         # TODO revaldate this conditional
