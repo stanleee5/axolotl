@@ -2,9 +2,11 @@ import logging
 import math
 import types
 import warnings
+from collections import defaultdict
 from functools import partial
 from typing import List, Optional
 
+import numpy as np
 import torch
 import torch.nn.functional as f
 import transformers
@@ -206,6 +208,19 @@ def replace_compute_loss(
         Returns:
             Union[float, Tuple[float, torch.Tensor]]: The computed loss, optionally with model outputs.
         """
+        # HACK:FIXME: Show losses after Evaluation epoch
+        if not hasattr(self, "loss_history"):
+            self.loss_history = None
+        if self.control.should_evaluate:
+            if self.loss_history is None:
+                self.loss_history = defaultdict(list)
+        elif self.loss_history is not None:
+            if medusa_logging and is_main_process():
+                logger.info(f"{self.state.global_step = }")
+                for k, v in self.loss_history.items():
+                    logger.info(f"{k}: {np.mean(v):.4f}")
+            self.loss_history = None
+
         if medusa_self_distillation:
             from peft.tuners.tuners_utils import BaseTunerLayer
 
@@ -337,6 +352,10 @@ def replace_compute_loss(
 
         prefix = "train" if model.training else "eval"
         log = {f"{prefix}/{k}": v for k, v in log.items()}
+        if self.control.should_evaluate:
+            for k, v in log.items():
+                self.loss_history[k].append(float(v))
+
         # if medusa_logging and is_main_process() and self.control.should_evaluate:
         #     logger.info(f"{self.state.global_step = }")
         #     for k, v in log.items():
