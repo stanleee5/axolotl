@@ -365,3 +365,48 @@ class UnsupportedPrompter(Prompter):
 
     def __repr__(self):
         return "Pre-tokenized or custom dataset types are unsupported for logging"
+
+
+class CodePrompter:
+    """
+    Prompting instruction-response with CodeLlama [INST] with '\n'
+    """
+
+    turn_input_format: str
+    turn_no_input_format: str
+
+    def __init__(self, prompt_style="code"):
+        if prompt_style == "code":
+            self.turn_input_format = "[INST]\n{instruction}\n{input}\n[/INST]\n"
+            self.turn_no_input_format = "[INST]\n{instruction}\n[/INST]\n"
+        elif prompt_style == "codellama":
+            self.turn_input_format = "[INST] {instruction}\n{input} [/INST] "
+            self.turn_no_input_format = "[INST] {instruction} [/INST] "
+        else:
+            raise ValueError(f"Invalid prompt style: {prompt_style}")
+
+    def _build_result(self, instruction, input_text, output):
+        # returns the full prompt from instruction and optional input
+        # if a label (=response, =output) is provided, it's also appended.
+        if input_text:
+            res = self.turn_input_format.format(
+                instruction=instruction, input=input_text
+            )
+        else:
+            res = self.turn_no_input_format.format(instruction=instruction)
+        if output:
+            res = f"{res}{output}"
+        return res
+
+    def build_prompt(
+        self,
+        instruction: str,
+        input: Union[None, str] = None,
+        output: Union[None, str] = None,
+    ) -> Generator[str, None, None]:
+        yield self._build_result(instruction, input, output)
+
+    def __repr__(self) -> str:
+        return REPR_TEMPLATE.format(
+            full_prompt=self._build_result("{instruction}", "{input}", "{output}")
+        )

@@ -1,4 +1,5 @@
 """Module containing data utilities"""
+
 import functools
 import hashlib
 import logging
@@ -35,6 +36,7 @@ from axolotl.prompt_tokenizers import (
 )
 from axolotl.prompters import (
     AlpacaPrompter,
+    CodePrompter,
     GPTeacherPrompter,
     JeopardyPrompter,
     MultipleChoiceConcisePrompter,
@@ -545,6 +547,18 @@ def get_dataset_wrapper(
             **ds_kwargs,
         )
         dataset_wrapper = ds_wrapper
+    elif d_base_type == "code":
+        from loguru import logger
+
+        logger.info(f"{d_base_type=} | {d_prompt_style=}")
+        dataset_prompter = CodePrompter(d_prompt_style)
+        ds_strategy = AlpacaPromptTokenizingStrategy(
+            dataset_prompter,
+            tokenizer,
+            cfg.train_on_inputs,
+            cfg.sequence_len,
+        )
+        dataset_wrapper = TokenizedPromptDataset(ds_strategy, dataset, **ds_kwargs)
     elif d_base_type == "explainchoice":
         dataset_prompter = MultipleChoiceExplainPrompter(d_prompt_style)
         ds_strategy = AlpacaMultipleChoicePromptTokenizingStrategy(

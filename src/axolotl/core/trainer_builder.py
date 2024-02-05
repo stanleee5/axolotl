@@ -831,7 +831,7 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
             False if self.cfg.ddp else None
         )
         training_arguments_kwargs["group_by_length"] = self.cfg.group_by_length
-        report_to = None
+        report_to = "tensorboard"
         if self.cfg.use_wandb:
             report_to = "wandb"
         if self.cfg.use_mlflow:
